@@ -621,7 +621,7 @@ fn main() {
                     )];
 
                     let payload = activity::Activity::new()
-                        .details("⚡ YuiOrb)
+                        .details("⚡Running YuiOrb")
                         .state("✨ Created by Yuniku")
                         .timestamps(
                             activity::Timestamps::new()
