@@ -617,11 +617,11 @@ fn main() {
 
                     let buttons = vec![activity::Button::new(
                         "✨ Created by Yuniku",
-                        "https://github.com/DrewSudo",
+                        "https://github.com/uweu2848-prog",
                     )];
 
                     let payload = activity::Activity::new()
-                        .details("⚡ Quest Automation Active")
+                        .details("⚡ YuiOrb)
                         .state("✨ Created by Yuniku")
                         .timestamps(
                             activity::Timestamps::new()
