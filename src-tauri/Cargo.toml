@@ -1,8 +1,8 @@
 [package]
-name = "discord-quest-completer"
+name = "yuni-orb"
 version = "0.1.0"
-description = "Discord Quest Completer"
-authors = ["you"]
+description = "Yuni Orb quest session dashboard"
+authors = ["Yuni"]
 edition = "2021"
 
 [build-dependencies]
@@ -11,21 +11,13 @@ tauri-build = { version = "1.5", features = [] }
 [dependencies]
 tauri = { version = "1.5", features = [ "updater", "custom-protocol", "system-tray", "api-all"] }
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
 reqwest = { version = "0.11", features = ["json"] }
-tokio = { version = "1.35", features = ["full"] }
-rand = "0.8"
 discord-rich-presence = "0.2"
 
 [target.'cfg(windows)'.dependencies.windows-sys]
 version = "0.48"
 features = [
-    "Win32_Foundation",
-    "Win32_Graphics_Dwm",
-    "Win32_Graphics_Gdi",
-    "Win32_System_LibraryLoader",
-    "Win32_System_Power",
-    "Win32_UI_WindowsAndMessaging"
+    "Win32_System_Power"
 ]
 
 [features]

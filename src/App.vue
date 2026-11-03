@@ -24,6 +24,14 @@ const ACCENTS = [
 // ---------------------------------------------------------------------------
 const STORE = 'orb-completer:v2'
 
+try {
+  for (const key of ['discord_token', 'auto_watch', 'auto_start']) {
+    localStorage.removeItem(`${STORE}:${key}`)
+  }
+} catch (e) {
+  // Storage may be unavailable in the preview.
+}
+
 function load(key, fallback) {
   try {
     const raw = localStorage.getItem(`${STORE}:${key}`)
@@ -57,12 +65,6 @@ const minutes = ref(load('minutes', 15))
 const busy = ref(false)
 const error = ref('')
 
-const token = ref(load('discord_token', ''))
-const showToken = ref(false)
-const currentQuest = ref(null)
-const autoStartEnabled = ref(load('auto_start', true))
-const autoWatchEnabled = ref(load('auto_watch', false))
-
 const quests = ref([])
 const finished = ref([])
 const focusId = ref(null)
@@ -73,7 +75,12 @@ const failedIcons = ref({})
 
 const favorites = ref(load('favorites', []))
 const recents = ref(load('recents', []))
-const settings = ref({ sound: true, compact: false, accent: 'crimson', autoStart: true, autoWatch: false, ...load('settings', {}) })
+const savedSettings = load('settings', {})
+if (savedSettings && typeof savedSettings === 'object') {
+  delete savedSettings.autoStart
+  delete savedSettings.autoWatch
+}
+const settings = ref({ sound: true, compact: false, accent: 'crimson', ...savedSettings })
 const stats = ref({ quests: 0, minutes: 0, ...load('stats', {}) })
 
 const searchEl = ref(null)
@@ -81,16 +88,6 @@ const listEl = ref(null)
 
 // last known status per running quest, used to tell "finished" from "stopped"
 const lastSeen = new Map()
-const rateLimitUntil = ref(0)
-const automationState = ref({
-  currentQuest: null,
-  autoStart: false,
-  autoWatch: false,
-  status: 'idle',
-  cooldownUntil: 0,
-})
-const automationLog = ref([])
-const apiDebug = ref([])
 let statusTimer = null
 let discordTimer = null
 let confirmTimer = null
@@ -173,25 +170,13 @@ const allDoneAt = computed(() => {
   return clock(Date.now() + longest * 1000)
 })
 
-const currentQuestLabel = computed(() => {
-  if (currentQuest.value && currentQuest.value.targeted_game) {
-    return currentQuest.value.targeted_game.name
-  }
-  return 'No active Discord quest'
-})
-
-const cooldownRemaining = computed(() => {
-  const left = Math.max(0, Math.ceil((rateLimitUntil.value - Date.now()) / 1000))
-  return left
-})
-
 const startLabel = computed(() => {
   if (picked.value.length > 1) return `Start ${picked.value.length} quests`
   return picked.value[0] && isRunning(picked.value[0].id) ? 'Restart quest' : 'Start quest'
 })
 
 const windowTitle = computed(() =>
-  focus.value ? `${fmt(remaining.value)} left: ${focus.value.name}` : 'Orb Completer'
+  focus.value ? `${fmt(remaining.value)} left: ${focus.value.name}` : 'Yuni Orb'
 )
 
 // ---------------------------------------------------------------------------
@@ -343,11 +328,8 @@ async function loadGames() {
   loading.value = true
   error.value = ''
   try {
-    recordDebug('fetch_games', 'request', 'loading detectable games')
     games.value = await invoke('fetch_games')
-    recordDebug('fetch_games', 'success', `${games.value.length} games loaded`)
   } catch (e) {
-    recordDebug('fetch_games', 'error', String(e))
     error.value = `Couldn't load the game list: ${e}`
   } finally {
     loading.value = false
@@ -390,71 +372,10 @@ async function refreshDiscord() {
   }
 }
 
-function addLog(message, level = 'info') {
-  automationLog.value = [{ id: `${Date.now()}-${Math.random()}`, level, message, at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) }, ...automationLog.value].slice(0, 8)
-}
-
-function recordDebug(action, status, detail = '') {
-  const entry = {
-    id: `${Date.now()}-${Math.random()}`,
-    action,
-    status,
-    detail,
-    at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-  }
-  apiDebug.value = [entry, ...apiDebug.value].slice(0, 10)
-}
-
-function setRateLimit(seconds) {
-  const delay = Math.max(0, Number(seconds) || 0)
-  rateLimitUntil.value = Date.now() + delay * 1000
-  automationState.value.cooldownUntil = rateLimitUntil.value
-  addLog(`Rate limiting enabled for ${delay}s`, 'warn')
-}
-
-async function syncCurrentQuest() {
-  const authToken = token.value.trim()
-  if (!authToken) {
-    currentQuest.value = null
-    return null
-  }
-
-  try {
-    recordDebug('fetch_current_quest', 'request', 'checking active Discord quest')
-    const quest = await invoke('fetch_current_quest', { token: authToken })
-    currentQuest.value = quest
-    automationState.value.currentQuest = quest
-    automationState.value.status = quest ? 'active' : 'idle'
-    addLog(quest ? `Current quest detected: ${quest.targeted_game?.name || 'Unknown'}` : 'No active quest detected')
-    recordDebug('fetch_current_quest', quest ? 'success' : 'idle', quest ? quest.targeted_game?.name || 'Quest found' : 'No active quest')
-    return quest
-  } catch (e) {
-    currentQuest.value = null
-    automationState.value.currentQuest = null
-    automationState.value.status = 'error'
-    addLog(`Quest sync failed: ${e}`, 'error')
-    recordDebug('fetch_current_quest', 'error', String(e))
-    return null
-  }
-}
-
-async function maybeAutoStartMissingQuest() {
-  if (!autoStartEnabled.value || !token.value.trim()) return
-
-  const active = await syncCurrentQuest()
-  if (active) return
-
-  if (!picked.value.length) return
-
-  await startQuests()
-}
-
 async function startQuests() {
-  if (!picked.value.length || busy.value || cooldownRemaining.value > 0) return
+  if (!picked.value.length || busy.value) return
   busy.value = true
   error.value = ''
-  automationState.value.status = 'starting'
-  addLog(`Starting ${picked.value.length} quest${picked.value.length > 1 ? 's' : ''}`)
   warmAudio()
   const mins = safeMinutes()
   const failures = []
@@ -462,44 +383,20 @@ async function startQuests() {
 
   for (const game of picked.value) {
     try {
-      recordDebug('start_quest', 'request', `starting ${game.name} for ${mins} minutes`)
       await invoke('start_quest', { game, minutes: mins })
       pushRecent(game.id)
-      addLog(`Started quest: ${game.name}`)
-      recordDebug('start_quest', 'success', `${game.name} launched`)
-
-      if (autoWatchEnabled.value && token.value.trim()) {
-        automationState.value.autoWatch = true
-        addLog(`Enabled video progress watcher for ${game.name}`)
-        recordDebug('auto_watch_video', 'request', `watcher enabled for ${game.name}`)
-        await invoke('auto_watch_video', {
-          token: token.value.trim(),
-          questId: String(game.id),
-          enabled: true,
-        })
-        recordDebug('auto_watch_video', 'success', `watcher accepted for ${game.name}`)
-      }
 
       if (!focused) {
         focusId.value = game.id
         focused = true
       }
     } catch (e) {
-      if (String(e).toLowerCase().includes('rate')) {
-        setRateLimit(30)
-      }
-      recordDebug('start_quest', 'error', `${game.name}: ${String(e)}`)
-      addLog(`Failed to start ${game.name}: ${e}`, 'error')
       failures.push(`${game.name} (${e})`)
     }
   }
 
   if (failures.length) error.value = `Couldn't start ${failures.join(', ')}`
   await refreshStatus()
-  await syncCurrentQuest()
-  automationState.value.autoStart = autoStartEnabled.value
-  automationState.value.autoWatch = autoWatchEnabled.value
-  automationState.value.status = currentQuest.value ? 'active' : 'idle'
   busy.value = false
 }
 
@@ -610,9 +507,6 @@ watch([query, tab], () => {
 
 watch(favorites, (v) => save('favorites', v), { deep: true })
 watch(recents, (v) => save('recents', v), { deep: true })
-watch(token, (v) => save('discord_token', v), { deep: true })
-watch(autoStartEnabled, (v) => save('auto_start', v), { deep: true })
-watch(autoWatchEnabled, (v) => save('auto_watch', v), { deep: true })
 watch(settings, (v) => save('settings', v), { deep: true })
 watch(stats, (v) => save('stats', v), { deep: true })
 watch(minutes, (v) => {
@@ -627,34 +521,6 @@ watch(
   },
   { immediate: true }
 )
-
-watch(
-  () => settings.value.autoStart,
-  (value) => {
-    autoStartEnabled.value = value
-    automationState.value.autoStart = value
-  },
-  { immediate: true }
-)
-
-watch(
-  () => settings.value.autoWatch,
-  (value) => {
-    autoWatchEnabled.value = value
-    automationState.value.autoWatch = value
-  },
-  { immediate: true }
-)
-
-watch(autoStartEnabled, (value) => {
-  settings.value.autoStart = value
-  automationState.value.autoStart = value
-})
-
-watch(autoWatchEnabled, (value) => {
-  settings.value.autoWatch = value
-  automationState.value.autoWatch = value
-})
 
 // Shows the countdown in the taskbar. Needs "window": { "setTitle": true } in the
 // Tauri allowlist, and is silently skipped if it isn't there.
@@ -677,16 +543,9 @@ watch(
 onMounted(() => {
   loadGames()
   refreshStatus()
-  syncCurrentQuest()
   refreshDiscord()
   statusTimer = setInterval(refreshStatus, 1000)
   discordTimer = setInterval(refreshDiscord, 5000)
-  setInterval(() => {
-    if (rateLimitUntil.value > 0 && Date.now() >= rateLimitUntil.value) {
-      rateLimitUntil.value = 0
-      automationState.value.cooldownUntil = 0
-    }
-  }, 1000)
   window.addEventListener('keydown', onKey)
 })
 
@@ -703,7 +562,10 @@ onBeforeUnmount(() => {
     <header class="bar">
       <div class="brand">
         <span class="mark" aria-hidden="true"></span>
-        <h1>Drew's Discord Quest Completer.</h1>
+        <div class="brand-copy">
+          <h1>Yuni Orb</h1>
+          <p>Quest session dashboard</p>
+        </div>
       </div>
 
       <div class="actions">
@@ -764,124 +626,11 @@ onBeforeUnmount(() => {
               </button>
             </div>
 
-            <div class="set-row stacked">
+            <div class="set-row privacy-note">
               <div>
-                <strong>Discord token</strong>
-                <small>Used only to read current quest state and auto-start safely</small>
+                <strong>Privacy</strong>
+                <small>Yuni Orb never asks for or stores your Discord account token. Choose games manually.</small>
               </div>
-              <div class="token-row">
-                <input
-                  class="token-input"
-                  v-model="token"
-                  :type="showToken ? 'text' : 'password'"
-                  placeholder="Paste token"
-                  autocomplete="off"
-                  spellcheck="false"
-                />
-                <button class="token-toggle" @click="showToken = !showToken">
-                  {{ showToken ? 'Hide' : 'Show' }}
-                </button>
-              </div>
-            </div>
-
-            <div class="set-row">
-              <div>
-                <strong>Auto-start missing quest</strong>
-                <small>Runs only when a Discord token is saved</small>
-              </div>
-              <button
-                class="switch"
-                :class="{ on: settings.autoStart }"
-                role="switch"
-                :aria-checked="settings.autoStart"
-                aria-label="Auto-start missing quest"
-                @click="settings.autoStart = !settings.autoStart"
-              >
-                <span></span>
-              </button>
-            </div>
-
-            <div class="set-row">
-              <div>
-                <strong>Auto-watch video progress</strong>
-                <small>Opt-in, throttled, and rate-limit aware</small>
-              </div>
-              <button
-                class="switch"
-                :class="{ on: settings.autoWatch }"
-                role="switch"
-                :aria-checked="settings.autoWatch"
-                aria-label="Auto-watch video progress"
-                @click="settings.autoWatch = !settings.autoWatch"
-              >
-                <span></span>
-              </button>
-            </div>
-
-            <div class="set-row automation-card">
-              <div class="status-summary">
-                <strong>Automation controls</strong>
-                <small>
-                  {{ automationState.status === 'active' ? 'Quest detected' : automationState.status === 'starting' ? 'Starting...' : automationState.status === 'error' ? 'Token or API issue' : 'Idle' }}
-                </small>
-              </div>
-              <div class="automation-grid">
-                <div class="automation-box">
-                  <span class="label">Current quest</span>
-                  <strong>{{ currentQuestLabel }}</strong>
-                </div>
-                <div class="automation-box">
-                  <span class="label">Auto-start</span>
-                  <strong>{{ settings.autoStart ? 'On' : 'Off' }}</strong>
-                </div>
-                <div class="automation-box">
-                  <span class="label">Video watcher</span>
-                  <strong>{{ settings.autoWatch ? 'On' : 'Off' }}</strong>
-                </div>
-                <div class="automation-box">
-                  <span class="label">Cooldown</span>
-                  <strong>{{ cooldownRemaining > 0 ? `${cooldownRemaining}s` : 'Ready' }}</strong>
-                </div>
-              </div>
-            </div>
-
-            <div class="set-row status-panel">
-              <div class="status-summary">
-                <strong>Automation status</strong>
-                <small>
-                  {{ automationState.status === 'active' ? 'Quest detected' : automationState.status === 'starting' ? 'Starting...' : automationState.status === 'error' ? 'Token or API issue' : 'Idle' }}
-                </small>
-              </div>
-              <div class="status-meta">
-                <span>{{ currentQuestLabel }}</span>
-                <span v-if="cooldownRemaining > 0">Cooldown: {{ cooldownRemaining }}s</span>
-              </div>
-            </div>
-
-            <div class="set-row log-panel">
-              <div class="status-summary">
-                <strong>Automation log</strong>
-              </div>
-              <ul class="mini-log">
-                <li v-for="entry in automationLog" :key="entry.id" :class="entry.level">
-                  <span>{{ entry.at }}</span>
-                  <strong>{{ entry.message }}</strong>
-                </li>
-              </ul>
-            </div>
-
-            <div class="set-row debug-panel">
-              <div class="status-summary">
-                <strong>API debug</strong>
-                <small>Request / result trace</small>
-              </div>
-              <ul class="mini-log debug-log">
-                <li v-for="entry in apiDebug" :key="entry.id" :class="entry.status">
-                  <span>{{ entry.at }} • {{ entry.action }}</span>
-                  <strong>{{ entry.status }}</strong>
-                  <small v-if="entry.detail">{{ entry.detail }}</small>
-                </li>
-              </ul>
             </div>
 
             <div class="set-row">
@@ -1055,6 +804,15 @@ onBeforeUnmount(() => {
 
       <!-- Stage -->
       <aside class="stage" aria-label="Quest progress">
+        <div class="stage-heading">
+          <div>
+            <span class="stage-eyebrow">YUNI ORB / SESSION</span>
+            <h2>Quest progress</h2>
+          </div>
+          <span class="stage-state" :class="{ active: !!focus }">
+            <i aria-hidden="true"></i>{{ focus ? 'ACTIVE' : 'READY' }}
+          </span>
+        </div>
         <div class="orb-wrap" :class="{ live: !!focus }">
           <svg
             class="orb"
@@ -1277,8 +1035,10 @@ kbd {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 14px 24px;
+  padding: 15px 24px;
   flex-wrap: wrap;
+  background: linear-gradient(180deg, #110608 0%, #080607 100%);
+  border-bottom: 1px solid rgba(var(--accent-rgb), 0.18);
 }
 
 .brand {
@@ -1287,19 +1047,33 @@ kbd {
   gap: 11px;
 }
 
+.brand-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
 .brand h1 {
   margin: 0;
   font-family: 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif;
-  font-size: 19px;
+  font-size: 17px;
   font-weight: 700;
   letter-spacing: -0.02em;
+}
+
+.brand-copy p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .mark {
   width: 20px;
   height: 20px;
   border-radius: 50%;
-  background: radial-gradient(circle at 32% 28%, #ffffff 0, var(--accent-2) 26%, var(--accent) 62%, var(--orb-deep) 100%);
+  background: radial-gradient(circle at 32% 28%, #ffffff 0, var(--accent-2) 20%, var(--accent) 58%, var(--orb-deep) 100%);
   box-shadow: 0 0 14px rgba(var(--accent-rgb), 0.6);
 }
 
@@ -1373,6 +1147,24 @@ kbd {
   border: 1px solid var(--line);
   border-radius: 12px;
   box-shadow: 0 20px 50px -10px rgba(0, 0, 0, 0.9), 0 0 0 1px rgba(var(--accent-rgb), 0.08);
+}
+
+.privacy-note {
+  align-items: flex-start;
+  padding: 13px 0 4px;
+  border-bottom: 0;
+}
+
+.privacy-note strong {
+  color: var(--accent);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.privacy-note small {
+  margin-top: 5px;
+  line-height: 1.5;
 }
 
 .set-row {
@@ -1957,10 +1749,64 @@ kbd {
   align-items: center;
   gap: 18px;
   min-height: 0;
-  padding: 28px 24px 20px;
+  padding: 20px 22px;
   overflow-y: auto;
-  background: radial-gradient(360px 300px at 50% 130px, rgba(var(--accent-rgb), 0.1), transparent 70%), var(--panel);
+  background: radial-gradient(360px 300px at 50% 180px, rgba(var(--accent-rgb), 0.08), transparent 72%), #090708;
   border-left: 1px solid var(--line);
+}
+
+.stage-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  align-self: stretch;
+  gap: 8px;
+  padding: 0 0 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.stage-eyebrow {
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+}
+
+.stage-heading h2 {
+  margin: 3px 0 0;
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.stage-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  color: var(--muted);
+  background: #100e0f;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.stage-state i {
+  width: 6px;
+  height: 6px;
+  background: var(--dim);
+  border-radius: 50%;
+}
+
+.stage-state.active {
+  color: #ff9aa8;
+  border-color: rgba(var(--accent-rgb), 0.4);
+}
+
+.stage-state.active i {
+  background: var(--accent);
+  box-shadow: 0 0 8px rgba(var(--accent-rgb), 0.75);
 }
 
 .orb-wrap {
@@ -2300,6 +2146,7 @@ kbd {
   .stage {
     border-left: 0;
     border-top: 1px solid var(--line);
+    min-height: 430px;
   }
 }
 

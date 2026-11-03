@@ -1,5 +1,5 @@
 {
-  "name": "discord-quest-completer",
+  "name": "yuni-orb",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -8,9 +8,7 @@
     "build": "vite build",
     "check": "vue-tsc --noEmit",
     "preview": "vite preview",
-    "tauri": "tauri",
-    "build:runner:win": "cargo build --release -p dqc-runner",
-    "copy:runner:win": "node scripts/copy-runner.mjs"
+    "tauri": "tauri"
   },
   "dependencies": {
     "@tauri-apps/api": "^1.5.3",
